@@ -62,11 +62,6 @@ $v_role = $data[$v_username]["ROLE"];
 $v_login_disabled = $data[$v_username]["LOGIN_DISABLED"];
 $v_login_use_iplist = $data[$v_username]["LOGIN_USE_IPLIST"];
 $v_login_allowed_ips = $data[$v_username]["LOGIN_ALLOW_IPS"];
-
-// Load passkeys for this user
-exec(HESTIA_CMD . "v-list-user-passkeys " . quoteshellarg($v_username) . " json", $output, $return_var);
-$v_passkeys = json_decode(implode("", $output), true) ?: [];
-unset($output);
 $v_ns = $data[$v_username]["NS"];
 $nameservers = explode(",", $v_ns);
 if (empty($nameservers[0])) {
