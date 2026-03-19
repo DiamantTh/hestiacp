@@ -1,0 +1,72 @@
+#!/bin/bash
+# info: list WebAuthn passkey credentials for a user account
+# options: USER [FORMAT]
+#
+# example: v-list-user-passkeys admin json
+#
+# This function lists all stored WebAuthn/FIDO2 passkey credentials for the user.
+
+#----------------------------------------------------------#
+#                Variables & Functions                     #
+#----------------------------------------------------------#
+
+# Argument definition
+user=$1
+format=${2-shell}
+
+# Includes
+# shellcheck source=/etc/hestiacp/hestia.conf
+source /etc/hestiacp/hestia.conf
+# shellcheck source=/usr/local/hestia/func/main.sh
+source $HESTIA/func/main.sh
+# load config file
+source_conf "$HESTIA/conf/hestia.conf"
+
+#----------------------------------------------------------#
+#                    Verifications                         #
+#----------------------------------------------------------#
+
+check_args '1' "$#" 'USER [FORMAT]'
+is_format_valid 'user' 'system'
+is_object_valid 'user' 'USER' "$user"
+
+#----------------------------------------------------------#
+#                       Action                             #
+#----------------------------------------------------------#
+
+passkey_file="$USER_DATA/passkeys.json"
+
+if [ ! -f "$passkey_file" ]; then
+	if [ "$format" = "json" ]; then
+		echo "{}"
+	else
+		echo "No passkeys registered."
+	fi
+	exit
+fi
+
+if [ "$format" = "json" ]; then
+	cat "$passkey_file"
+else
+	$HESTIA_PHP -r "
+\$data = json_decode(file_get_contents('$passkey_file'), true);
+if (empty(\$data)) {
+    echo 'No passkeys registered.' . PHP_EOL;
+    exit;
+}
+echo str_pad('ID', 24) . ' ' . str_pad('NAME', 24) . ' ' . str_pad('CREATED', 20) . ' LAST_USED' . PHP_EOL;
+echo str_repeat('-', 80) . PHP_EOL;
+foreach (\$data as \$id => \$cred) {
+    echo str_pad(substr(\$id, 0, 22), 24) . ' '
+       . str_pad(substr(\$cred['name'], 0, 22), 24) . ' '
+       . str_pad(\$cred['created'], 20) . ' '
+       . (\$cred['last_used'] ?: '-') . PHP_EOL;
+}
+"
+fi
+
+#----------------------------------------------------------#
+#                       Hestia                             #
+#----------------------------------------------------------#
+
+exit

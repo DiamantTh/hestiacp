@@ -1,0 +1,74 @@
+#!/bin/bash
+# info: update the sign count and last_used timestamp of a WebAuthn passkey credential
+# options: USER CREDENTIAL_ID SIGN_COUNT
+#
+# example: v-update-user-passkey admin "base64credentialid" 5
+#
+# This function updates a stored WebAuthn/FIDO2 passkey credential's sign count.
+
+#----------------------------------------------------------#
+#                Variables & Functions                     #
+#----------------------------------------------------------#
+
+# Argument definition
+user=$1
+credential_id=$2
+sign_count=$3
+
+# Includes
+# shellcheck source=/etc/hestiacp/hestia.conf
+source /etc/hestiacp/hestia.conf
+# shellcheck source=/usr/local/hestia/func/main.sh
+source $HESTIA/func/main.sh
+# load config file
+source_conf "$HESTIA/conf/hestia.conf"
+
+#----------------------------------------------------------#
+#                    Verifications                         #
+#----------------------------------------------------------#
+
+check_args '3' "$#" 'USER CREDENTIAL_ID SIGN_COUNT'
+is_format_valid 'user' 'system'
+is_object_valid 'user' 'USER' "$user"
+
+#----------------------------------------------------------#
+#                       Action                             #
+#----------------------------------------------------------#
+
+passkey_file="$USER_DATA/passkeys.json"
+
+if [ ! -f "$passkey_file" ]; then
+	echo "Error: No passkeys registered for user"
+	exit "$E_NOTEXIST"
+fi
+
+timestamp=$(date '+%Y-%m-%d %T')
+
+result=$($HESTIA_PHP -r "
+\$file = '$passkey_file';
+\$id = '$credential_id';
+\$count = (int)'$sign_count';
+\$ts = '$timestamp';
+\$data = json_decode(file_get_contents(\$file), true);
+if (!isset(\$data[\$id])) {
+    echo 'NOTEXIST';
+    exit(1);
+}
+\$data[\$id]['sign_count'] = \$count;
+\$data[\$id]['last_used'] = \$ts;
+file_put_contents(\$file, json_encode(\$data, JSON_PRETTY_PRINT));
+echo 'OK';
+")
+
+if [ "$result" = "NOTEXIST" ]; then
+	echo "Error: Passkey credential not found"
+	exit "$E_NOTEXIST"
+fi
+
+#----------------------------------------------------------#
+#                       Hestia                             #
+#----------------------------------------------------------#
+
+log_event "$OK" "$ARGUMENTS"
+
+exit
