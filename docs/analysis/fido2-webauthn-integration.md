@@ -2,7 +2,9 @@
 
 > Ergänzende Analyse zur architektonischen und sicherheitstechnischen Bestandsaufnahme.  
 > Untersucht, welche WebAuthn-Modi für HestiaCP sinnvoll sind, ob die exec/sudo-Infrastruktur
-> zwingend benötigt wird, und wie sich Credentials ohne Datenbank persistent speichern lassen.
+> zwingend benötigt wird, wie sich Credentials ohne Datenbank persistent speichern lassen,
+> und **warum HestiaCP bewusst kein Datenbankmodell verwendet** — obwohl PHP-Software
+> typischerweise DB-zentriert ist.
 
 ---
 
@@ -193,6 +195,126 @@ eine Datenbank angesprochen wird, ist eindeutig zu verneinen:
 - Es gibt keine ORM-Schicht, keinen DB-Migrations-Engine, keine Connection-Pool-Konfiguration
   für Hestia-interne Daten.
 
+### 4.4 Warum kein Datenbankmodell? — Designentscheidung im Kontext
+
+Diese Frage ist berechtigt: PHP-Anwendungen (WordPress, Drupal, Laravel, WHMCS usw.) sind
+typischerweise DB-zentriert. Warum weicht HestiaCP davon ab?
+
+#### 4.4.1 Historische Herkunft: VestaCP und das Unix-Paradigma
+
+HestiaCP ist ein Fork von VestaCP (das wiederum ISPConfig-Konzepte aufgreift). Alle diese
+Control Panels entstammen einer Ära, in der die **Konfigurationsdatei das primäre
+Datenformat eines Linux-Systems** war — nginx.conf, BIND-Zonefiles, Dovecot-Passworddateien,
+Postfix-Tabellen. Die Hestia-`*.conf`-Dateien in `$HESTIA/data/` sind direkte Spiegel und
+Metadaten dieser Systemkonfigs:
+
+```
+$HESTIA/data/users/alice/web.conf   →  generiert  →  /etc/nginx/conf.d/alice/example.com.conf
+$HESTIA/data/users/alice/dns.conf   →  generiert  →  /etc/bind/alice/example.com.db
+$HESTIA/data/users/alice/mail.conf  →  generiert  →  /etc/dovecot/conf.d/alice.conf
+```
+
+Die Shell-Skripte lesen `web.conf`, schreiben nginx-Config, rufen `nginx -s reload` auf —
+alles in einem einzigen, selbst-enthaltenen Prozess. Eine Datenbank wäre ein zusätzlicher
+externer Abhängigkeitspunkt in dieser Pipeline.
+
+#### 4.4.2 Warum eine Datenbank für DB-zentrierte PHP-Apps sinnvoll ist — und hier nicht
+
+| Eigenschaft | Web-App (z. B. WordPress) | HestiaCP |
+|---|---|---|
+| **Datenumfang** | Millionen Posts, Kommentare, Nutzer | Wenige hundert Nutzer, je ~10 Domains |
+| **Abfragekomplexität** | JOINs, Volltextsuche, Aggregationen | Zeilenweise `grep` auf kleine Dateien |
+| **Schreibrate** | Viele parallele HTTP-Requests | Adminaktionen, typisch 1 Nutzer aktiv |
+| **Daten-Typ** | Strukturierte Inhalte (Text, Bilder) | Systemkonfigurationsparameter |
+| **Primäre Konsumenten** | PHP (nur Webserver) | nginx, BIND, Dovecot, Postfix *und* PHP |
+| **Transaktionen nötig?** | Ja (z. B. Bestellung + Lagerupdate) | Nein (jede Änderung ist atomar auf Dateiebene) |
+| **Skalierungsmodell** | Horizontal (viele App-Server, 1 DB) | Vertikal (1 dedizierter Server) |
+
+**HestiaCP verwaltet typisch 1–500 Nutzer auf einem Dedicated/VPS-Server.**
+Bei dieser Größenordnung bieten Flat Files *messbaren* Vorteil: kein Verbindungs-Overhead,
+kein Query-Parsing, kein Locking — ein `grep "^DOMAIN=" web.conf` ist schneller als
+`SELECT * FROM domains WHERE user = ?` mit Verbindungsaufbau.
+
+#### 4.4.3 Technische Vorteile des Flat-File-Modells für einen Control Panel
+
+1. **Keine externe Abhängigkeit beim Bootstrap**: Beim Serverstart oder Recovery kann Hestia
+   sofort starten, auch wenn MySQL noch nicht läuft, abstürzt oder korrupt ist.
+   Für einen *Server-Manager*, der selbst MySQL installiert und neustartet, wäre eine
+   MySQL-Abhängigkeit ein klassischer Henne-Ei-Fehler.
+
+2. **Backup ist trivial**: `rsync $HESTIA/data/` ist ein vollständiges, konsistentes Backup
+   aller Hestia-Metadaten. Mit einer DB wäre ein separater `mysqldump` erforderlich, der
+   zum richtigen Zeitpunkt laufen müsste.
+
+3. **Menschenlesbar und direkt editierbar**: Administratoren können `user.conf` mit `vi`
+   öffnen und im Notfall direkt bearbeiten — ohne MySQL-Client, ohne SQL-Kenntnisse.
+
+4. **Diff und Versionierung**: `git diff $HESTIA/data/` zeigt sofort alle Konfigurationsänderungen.
+   Eine DB-Änderung wäre ohne spezielle Tools nicht diff-bar.
+
+5. **Atomare Schreiboperationen auf Dateiebene**: `echo "..." > user.conf` ist auf modernen
+   Dateisystemen mit Journaling effektiv atomar. Race-Conditions zwischen parallelen Schreibern
+   sind bei Control-Panel-Operationen (serielle Admin-Aktionen) kein relevantes Problem.
+
+6. **Kein Schema-Migrations-Problem**: Eine neue Hestia-Version fügt einfach eine neue Zeile
+   in neu angelegte `user.conf` ein. Bei einer DB wären `ALTER TABLE`-Migrationen nötig,
+   die bei Fehlern den Betrieb unterbrechen.
+
+#### 4.4.4 Bekannte Nachteile des Flat-File-Modells
+
+Zur Vollständigkeit — das Modell hat reale Grenzen:
+
+- **Kein serverübergreifendes Querying**: Eine zentrale Datenbank würde Multi-Server-Cluster
+  (Hestia auf 10 Nodes, ein Admin-Dashboard) ermöglichen. Flat Files sind node-lokal.
+- **Kein echtes ACID**: Bricht ein `v-add-user`-Skript teilweise fehl, bleibt ein
+  inkonsistenter Zustand zurück (z. B. System-User ohne `user.conf`). Transaktionen würden
+  das verhindern.
+- **Performance bei sehr vielen Domains**: Ein Server mit 10.000 Domains müsste bei
+  bestimmten Operationen viele Dateien scannen — hier würden SQL-Indizes helfen.
+- **Keine Volltextsuche**: "Finde alle Domains mit einem bestimmten DNS-Eintrag" erfordert
+  Shell-Schleifen statt eines `SELECT`-Statements.
+
+Für die **tatsächliche Hestia-Nutzungsrealität** (1–500 Nutzer, ein Server, serielle
+Admin-Aktionen) überwiegen die Vorteile klar.
+
+### 4.5 Könnte HestiaCP auf ein Datenbankmodell umgestellt werden?
+
+Theoretisch ja — praktisch ist es ein tiefer architektonischer Umbau:
+
+1. **Alle `v-*`-Skripte** müssten statt `grep`/`sed` auf Flat Files SQL-Queries ausführen.
+   Das sind derzeit >250 Skripte.
+2. **Das gesamte `func/main.sh`** (~20 Kernfunktionen: `update_user_value`, `get_user_value`,
+   `source_conf`, `increase_user_value`, `decrease_user_value`, `update_object_value` u. a.)
+   müsste durch SQL-Äquivalente ersetzt werden.
+3. **Die Interoperabilität mit Systemdiensten** (nginx, BIND, etc.) würde sich nicht ändern —
+   jene lesen weiter Konfig-Dateien. Das heißt: die erzeugten System-Konfigs blieben Flat Files,
+   nur die *Metadaten* kämen aus einer DB. Das erhöht die Komplexität, ohne klaren Vorteil.
+4. **Eine neue kritische Abhängigkeit** wird eingeführt: MySQL/MariaDB muss laufen, bevor
+   Hestia irgendetwas tun kann — auch `v-restart-web`.
+
+**Fazit zur Migration**: Der Umbau wäre eine vollständige Neuentwicklung des Backends, ohne
+dass die Kernfunktionalität davon profitiert. Es gibt keinen technischen Druck, diesen Weg
+zu gehen.
+
+### 4.6 Sonderfall WebAuthn-Credentials: DB oder Flat File?
+
+WebAuthn-Credentials unterscheiden sich von typischen Hestia-Daten in einem Punkt:
+Der **Sign Count** muss nach *jedem* Login atomar inkrementiert werden. Das ist die
+einzige wirkliche Transaktionsanforderung im bisherigen Hestia-Datenmodell.
+
+Analyse der Optionen:
+
+| Option | Implementierung | Aufwand | Korrektheit |
+|---|---|---|---|
+| **Flat File** (`webauthn.conf`) | `sed -i` via `v-check-user-webauthn` | Minimal | Ausreichend bei 1 Admin-Login gleichzeitig |
+| **SQLite** (pro User) | `$HESTIA/data/users/$user/webauthn.db` | Gering | Atomar durch SQLite-Transaktionen |
+| **MySQL** (Hestia-eigene DB) | neue DB + Schema + Migration | Hoch | ACID, aber neue Systemabhängigkeit |
+
+**Empfehlung**: Flat File (`webauthn.conf`) ist für die Zielgruppe (1 Admin-Nutzer, serielle
+Logins) vollkommen ausreichend. SQLite wäre eine akzeptable Alternative, wenn man
+strikte Atomarität beim Sign-Count-Update sicherstellen möchte, ohne eine neue externe
+Abhängigkeit einzuführen — aber auch das ist für Hestia-Verhältnisse Overengineering.
+
 ---
 
 ## 5. Konkrete Implementierungsskizze
@@ -297,3 +419,9 @@ Die Challenge lebt ausschließlich in der PHP-Session — kein sudo, kein DB, ke
 5. **Implementierungsaufwand**: ~4 neue `v-*`-Bash-Skripte, 1 neue PHP-Bibliothek via Composer,
    ~4 neue PHP-Endpunkte, 1 angepasstes Login-Template und ein neues `webauthn.conf`-Format.
    Keine Datenbankmigrationen, keine Änderungen am Sicherheitsmodell.
+6. **Das Flat-File-Modell ist kein Versehen, sondern eine bewusste Designentscheidung**
+   (Abschnitt 4.4). HestiaCP verwaltet Systemdienste, nicht Web-Content. Die Daten-Konsumenten
+   sind nginx, BIND, Dovecot — diese lesen Konfig-Dateien, nicht SQL. Eine Datenbank als
+   primärer Datenspeicher würde eine kritische neue Abhängigkeit schaffen (MySQL muss laufen,
+   damit Hestia MySQL neu starten kann), ohne dass die Kernfunktionalität profitiert. Ein
+   Umbau auf ein DB-Modell wäre eine vollständige Backend-Neuentwicklung aller >250 `v-*`-Skripte.
