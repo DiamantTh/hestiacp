@@ -202,11 +202,18 @@ typischerweise DB-zentriert. Warum weicht HestiaCP davon ab?
 
 #### 4.4.1 Historische Herkunft: VestaCP und das Unix-Paradigma
 
-HestiaCP ist ein Fork von VestaCP (das wiederum ISPConfig-Konzepte aufgreift). Alle diese
-Control Panels entstammen einer Ära, in der die **Konfigurationsdatei das primäre
-Datenformat eines Linux-Systems** war — nginx.conf, BIND-Zonefiles, Dovecot-Passworddateien,
-Postfix-Tabellen. Die Hestia-`*.conf`-Dateien in `$HESTIA/data/` sind direkte Spiegel und
-Metadaten dieser Systemkonfigs:
+HestiaCP ist ein Fork von VestaCP. Dabei ist ein wichtiger Unterschied zu ISPConfig
+zu beachten: **ISPConfig** (ein weiteres verbreitetes Open-Source-Hosting-Control-Panel)
+verwendet tatsächlich **MySQL als primären Datenspeicher** — alle Domains, Nutzer,
+DNS-Einträge etc. werden in einer relationalen Datenbank verwaltet, und die
+Systemkonfig-Dateien werden daraus generiert. ISPConfig beweist damit, dass ein
+DB-zentrierter Ansatz für Control Panels technisch durchaus möglich und weit verbreitet ist.
+
+**VestaCP hingegen ging einen anderen Weg**: Es orientierte sich am Unix-Paradigma,
+in dem die **Konfigurationsdatei das primäre Datenformat eines Linux-Systems** ist —
+nginx.conf, BIND-Zonefiles, Dovecot-Passworddateien, Postfix-Tabellen. HestiaCP
+hat diese Entscheidung übernommen. Die Hestia-`*.conf`-Dateien in `$HESTIA/data/` sind
+direkte Spiegel und Metadaten dieser Systemkonfigs:
 
 ```
 $HESTIA/data/users/alice/web.conf   →  generiert  →  /etc/nginx/conf.d/alice/example.com.conf
@@ -217,6 +224,11 @@ $HESTIA/data/users/alice/mail.conf  →  generiert  →  /etc/dovecot/conf.d/ali
 Die Shell-Skripte lesen `web.conf`, schreiben nginx-Config, rufen `nginx -s reload` auf —
 alles in einem einzigen, selbst-enthaltenen Prozess. Eine Datenbank wäre ein zusätzlicher
 externer Abhängigkeitspunkt in dieser Pipeline.
+
+> **Hinweis zum ISPConfig-Vergleich**: ISPConfig zeigt, dass ein DB-Modell für Control
+> Panels funktioniert. Der Unterschied zu HestiaCP ist eine *bewusste Architekturentscheidung*
+> von VestaCP/HestiaCP — nicht ein technisches Versäumnis. Wer ISPConfigs DB-Ansatz bevorzugt,
+> findet dort eine ausgereifte Alternative.
 
 #### 4.4.2 Warum eine Datenbank für DB-zentrierte PHP-Apps sinnvoll ist — und hier nicht
 
